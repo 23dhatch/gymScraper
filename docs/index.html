@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSU Gym Occupancy</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <style>
+    body { background: #f0f2f5; }
+    .navbar { background: #bb0000 !important; }
+    .navbar-brand { color: #fff !important; font-weight: 700; }
+    .subtitle { color: rgba(255,255,255,.75); font-size: .8rem; }
+    .card { border: none; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    .pct { font-size: 2.4rem; font-weight: 700; line-height: 1; }
+    .pct.low    { color: #198754; }
+    .pct.medium { color: #fd7e14; }
+    .pct.high   { color: #dc3545; }
+    .meta { font-size: .78rem; color: #aaa; }
+    .heatmap td {
+      width: 36px; height: 26px; font-size: .6rem;
+      text-align: center; border: 1px solid #e9ecef;
+    }
+    .heatmap th { font-size: .68rem; padding: 2px 4px; background: #f8f9fa; }
+    .stale-warn { font-size: .78rem; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar px-3 py-2 mb-4">
+  <div>
+    <span class="navbar-brand">OSU Gym Tracker</span><br>
+    <span class="subtitle" id="lastFetch">Loading data…</span>
+  </div>
+  <button class="btn btn-sm btn-light ms-auto" onclick="loadAll()">Refresh</button>
+</nav>
+
+<div class="container-fluid px-3">
+
+  <!-- Current occupancy cards -->
+  <div class="row g-3 mb-4" id="cards">
+    <div class="col-12 text-muted small">Fetching latest readings…</div>
+  </div>
+
+  <!-- Charts -->
+  <div class="row g-3 mb-4">
+    <div class="col-lg-6">
+      <div class="card p-3">
+        <h6 class="mb-3">Average % Full by Hour of Day</h6>
+        <canvas id="hourChart"></canvas>
+        <p class="text-muted text-center small mt-2 d-none" id="hourNoData">
+          Not enough data yet — check back after a few hours.
+        </p>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="card p-3">
+        <h6 class="mb-3">Heatmap — Avg % Full by Day &amp; Hour</h6>
+        <div id="heatmapWrap">
+          <p class="text-muted text-center small" id="hmNoData">
+            Not enough data yet — check back after a day or two.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+const REPO    = "23dhatch/gymScraper";
+const BRANCH  = "main";
+const CSV_URL = `https://raw.githubusercontent.com/${REPO}/${BRANCH}/data/occupancy.csv`;
+
+const PALETTE   = ["#bb0000","#0057b7","#198754","#fd7e14","#6f42c1"];
+const DAY_NAMES = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const HOURS     = Array.from({length:24}, (_,i) => {
+  const h = i%12||12; return `${h}${i<12?"a":"p"}`;
+});
+
+let hourChartObj = null;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function pctClass(p){ return p<40?"low":p<70?"medium":"high"; }
+
+function heatColor(v){
+  if(v==null) return "#f0f2f5";
+  if(v<40)  return `rgba(25,135,84,${.15+v/100*.6})`;
+  if(v<70)  return `rgba(253,126,20,${.15+v/100*.6})`;
+  return `rgba(220,53,69,${.2+v/100*.55})`;
+}
+
+// ── Parse CSV → array of objects ─────────────────────────────────────────────
+function parseCSV(raw){
+  const {data} = Papa.parse(raw.trim(), {header:true, dynamicTyping:true, skipEmptyLines:true});
+  return data.map(r => ({
+    ...r,
+    scraped_dt: new Date(r.scraped_at + "Z"),   // treat as UTC
+  }));
+}
+
+// ── Aggregate helpers ─────────────────────────────────────────────────────────
+function groupBy(arr, key){ return arr.reduce((m,r)=>{ (m[r[key]]??=[]).push(r); return m; }, {}); }
+
+function avgByHour(rows){
+  // returns array[24] of avg pct or null
+  const buckets = Array.from({length:24}, ()=>[]);
+  for(const r of rows){
+    if(!r.capacity) continue;
+    buckets[r.scraped_dt.getUTCHours()].push(r.count/r.capacity*100);
+  }
+  return buckets.map(b => b.length ? +(b.reduce((s,v)=>s+v,0)/b.length).toFixed(1) : null);
+}
+
+function avgHeatmap(rows){
+  // returns [7][24] matrix (0=Mon)
+  const buckets = Array.from({length:7}, ()=>Array.from({length:24},()=>[]));
+  for(const r of rows){
+    if(!r.capacity) continue;
+    const dow = (r.scraped_dt.getUTCDay()+6)%7; // JS Sunday=0 → Mon=0
+    buckets[dow][r.scraped_dt.getUTCHours()].push(r.count/r.capacity*100);
+  }
+  return buckets.map(day =>
+    day.map(cell => cell.length ? +(cell.reduce((s,v)=>s+v,0)/cell.length).toFixed(1) : null)
+  );
+}
+
+// ── Render cards ─────────────────────────────────────────────────────────────
+function renderCards(rows){
+  const container = document.getElementById("cards");
+
+  // Latest reading per facility+area
+  const latest = {};
+  for(const r of rows){
+    const k = `${r.facility}||${r.area}`;
+    if(!latest[k] || r.scraped_dt > latest[k].scraped_dt) latest[k] = r;
+  }
+
+  const cards = Object.values(latest);
+  if(!cards.length){
+    container.innerHTML = '<div class="col-12 text-muted small">No data yet.</div>';
+    return;
+  }
+
+  const now = new Date();
+  container.innerHTML = cards.map(d => {
+    const pct = d.capacity ? Math.round(d.count/d.capacity*100) : null;
+    const cls = pct!=null ? pctClass(pct) : "";
+    const ageMs  = now - d.scraped_dt;
+    const ageMin = Math.round(ageMs/60000);
+    const stale  = ageMin > 90;
+    return `
+      <div class="col-sm-6 col-md-4 col-lg-3">
+        <div class="card p-3">
+          <div class="fw-semibold mb-1">${d.facility} — ${d.area}</div>
+          <div class="pct ${cls}">${pct!=null?pct+"%":"—"}</div>
+          <div class="meta mt-1">${d.count} / ${d.capacity} people</div>
+          <div class="meta">Gym updated: ${d.updated_at||"unknown"}</div>
+          ${stale?`<div class="stale-warn text-warning mt-1">⚠ Scraped ${ageMin} min ago</div>`:""}
+        </div>
+      </div>`;
+  }).join("");
+}
+
+// ── Render hour chart ─────────────────────────────────────────────────────────
+function renderHourChart(byFacility){
+  const canvas  = document.getElementById("hourChart");
+  const noData  = document.getElementById("hourNoData");
+  const datasets = [];
+
+  Object.entries(byFacility).forEach(([key, rows], i) => {
+    const data = avgByHour(rows);
+    if(data.some(v=>v!=null)){
+      datasets.push({
+        label: key,
+        data,
+        borderColor: PALETTE[i%PALETTE.length],
+        backgroundColor: "transparent",
+        tension: .3,
+        spanGaps: true,
+        pointRadius: 3,
+      });
+    }
+  });
+
+  if(!datasets.length){
+    canvas.classList.add("d-none");
+    noData.classList.remove("d-none");
+    return;
+  }
+  canvas.classList.remove("d-none");
+  noData.classList.add("d-none");
+
+  if(hourChartObj) hourChartObj.destroy();
+  hourChartObj = new Chart(canvas, {
+    type: "line",
+    data: { labels: HOURS, datasets },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position:"top" },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y!=null?c.parsed.y+"%":"no data"}` } }
+      },
+      scales: {
+        y: { min:0, max:100, title:{display:true,text:"% Full"}, ticks:{callback:v=>v+"%"} },
+        x: { title:{display:true,text:"Hour (UTC)"} }
+      }
+    }
+  });
+}
+
+// ── Render heatmap ────────────────────────────────────────────────────────────
+function renderHeatmap(byFacility){
+  const wrap   = document.getElementById("heatmapWrap");
+  const noData = document.getElementById("hmNoData");
+
+  let html = "";
+  for(const [key, rows] of Object.entries(byFacility)){
+    const matrix = avgHeatmap(rows);
+    if(!matrix.flat().some(v=>v!=null)) continue;
+    html += `<strong>${key}</strong>
+      <div style="overflow-x:auto">
+      <table class="heatmap mb-3 mt-1"><thead><tr>
+        <th></th>${HOURS.map(h=>`<th>${h}</th>`).join("")}
+      </tr></thead><tbody>`;
+    for(let d=0;d<7;d++){
+      html += `<tr><th>${DAY_NAMES[d]}</th>`;
+      for(let h=0;h<24;h++){
+        const v = matrix[d][h];
+        html += `<td style="background:${heatColor(v)}" title="${DAY_NAMES[d]} ${HOURS[h]}: ${v!=null?v+"%":"no data"}">${v!=null?v:""}`;
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table></div>";
+  }
+
+  if(html){
+    noData.classList.add("d-none");
+    wrap.innerHTML = html + `<p class="text-muted small">Times shown in UTC (subtract 4–5 h for Columbus local time).</p>`;
+  }
+}
+
+// ── Main load ─────────────────────────────────────────────────────────────────
+async function loadAll(){
+  document.getElementById("lastFetch").textContent = "Refreshing…";
+  try {
+    const resp = await fetch(CSV_URL + "?t=" + Date.now());
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const raw  = await resp.text();
+    const rows = parseCSV(raw);
+
+    if(!rows.length){
+      document.getElementById("lastFetch").textContent = "No data yet — check back soon.";
+      return;
+    }
+
+    // Group by "RPAC Weight Floor", "JON Weight Floor", etc.
+    const byFacility = groupBy(rows, "facility");
+    // Flatten to facility+area key for charts
+    const byKey = {};
+    for(const r of rows){
+      const k = `${r.facility} ${r.area}`;
+      (byKey[k]??=[]).push(r);
+    }
+
+    renderCards(rows);
+    renderHourChart(byKey);
+    renderHeatmap(byKey);
+
+    const newest = new Date(Math.max(...rows.map(r=>r.scraped_dt)));
+    document.getElementById("lastFetch").textContent =
+      `${rows.length} readings · last scraped ${newest.toUTCString()}`;
+
+  } catch(e){
+    document.getElementById("lastFetch").textContent = "Error loading data: " + e.message;
+  }
+}
+
+loadAll();
+setInterval(loadAll, 10 * 60 * 1000);   // auto-refresh every 10 min
+</script>
+</body>
+</html>

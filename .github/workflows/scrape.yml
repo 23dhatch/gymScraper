@@ -1,0 +1,41 @@
+name: Scrape Gym Occupancy
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes, 24/7
+  workflow_dispatch:           # allow manual trigger from GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # needed to commit the CSV back
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright pandas
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run scraper
+        run: python scrape_ci.py
+
+      - name: Commit updated CSV
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/occupancy.csv
+          git diff --staged --quiet || git commit -m "data: scrape $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push

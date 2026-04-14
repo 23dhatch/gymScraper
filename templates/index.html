@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSU Gym Occupancy Tracker</title>
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+  />
+  <style>
+    body { background: #f0f2f5; }
+    .navbar { background: #bb0000 !important; }
+    .navbar-brand, .nav-status { color: #fff !important; font-weight: 600; }
+    .nav-status { font-size: 0.82rem; opacity: 0.85; }
+    .card { border: none; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    .pct-badge {
+      font-size: 2.2rem; font-weight: 700; line-height: 1;
+    }
+    .pct-badge.low    { color: #198754; }
+    .pct-badge.medium { color: #fd7e14; }
+    .pct-badge.high   { color: #dc3545; }
+    .count-label { font-size: 0.85rem; color: #6c757d; }
+    .updated-label { font-size: 0.78rem; color: #aaa; }
+    .heatmap-table td {
+      width: 38px; height: 28px; text-align: center;
+      font-size: 0.65rem; border: 1px solid #e9ecef;
+      cursor: default;
+    }
+    .heatmap-table th {
+      font-size: 0.7rem; padding: 2px 4px;
+      background: #f8f9fa; font-weight: 600;
+    }
+    .no-data { color: #aaa; font-style: italic; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg px-4 py-2 mb-4">
+  <span class="navbar-brand">OSU Gym Occupancy Tracker</span>
+  <div class="ms-auto d-flex align-items-center gap-3">
+    <span class="nav-status" id="statusText">Loading…</span>
+    <button class="btn btn-sm btn-light" onclick="refreshAll()">Refresh Now</button>
+  </div>
+</nav>
+
+<div class="container-fluid px-4">
+
+  <!-- Current occupancy cards -->
+  <div class="row g-3 mb-4" id="facilityCards">
+    <div class="col-12 text-muted">Loading current occupancy…</div>
+  </div>
+
+  <!-- Charts row -->
+  <div class="row g-3 mb-4">
+    <div class="col-lg-6">
+      <div class="card p-3">
+        <h6 class="mb-3">Average % Full by Hour of Day</h6>
+        <canvas id="hourChart" height="200"></canvas>
+        <p class="no-data text-center mt-3 d-none" id="hourChartNoData">
+          Not enough data yet — check back after a few hours of collection.
+        </p>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="card p-3">
+        <h6 class="mb-3">Heatmap — Avg % Full by Day &amp; Hour</h6>
+        <div id="heatmapContainer">
+          <p class="no-data text-center" id="heatmapNoData">
+            Not enough data yet — check back after a day or two of collection.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+const PALETTE = [
+  "#bb0000", "#0057b7", "#198754", "#fd7e14", "#6f42c1"
+];
+
+let hourChartObj = null;
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+function pctColor(pct) {
+  if (pct === null || pct === undefined) return "#e9ecef";
+  if (pct < 40)  return `rgba(25, 135, 84, ${0.2 + pct/100*0.7})`;
+  if (pct < 70)  return `rgba(253, 126, 20, ${0.2 + pct/100*0.7})`;
+  return `rgba(220, 53, 69, ${0.3 + pct/100*0.5})`;
+}
+
+function badgeClass(pct) {
+  if (pct < 40) return "low";
+  if (pct < 70) return "medium";
+  return "high";
+}
+
+const DAY_NAMES = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const HOURS = Array.from({length:24}, (_,i) => {
+  const h = i % 12 || 12;
+  return `${h}${i < 12 ? "a" : "p"}`;
+});
+
+// ── fetch & render ────────────────────────────────────────────────────────────
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  return r.json();
+}
+
+async function renderCards() {
+  const data = await fetchJSON("/api/latest");
+  const container = document.getElementById("facilityCards");
+  if (!data.length) {
+    container.innerHTML = '<div class="col-12 text-muted">No data collected yet. The scraper is running — check back in a minute.</div>';
+    return;
+  }
+  container.innerHTML = data.map(d => {
+    const pct = d.capacity ? Math.round(d.count / d.capacity * 100) : null;
+    const cls = pct !== null ? badgeClass(pct) : "";
+    return `
+      <div class="col-sm-6 col-md-4 col-lg-3">
+        <div class="card p-3">
+          <div class="fw-semibold mb-1">${d.facility} — ${d.area}</div>
+          <div class="pct-badge ${cls}">${pct !== null ? pct + "%" : "—"}</div>
+          <div class="count-label mt-1">${d.count} / ${d.capacity} people</div>
+          <div class="updated-label mt-1">Gym updated: ${d.updated_at || "unknown"}</div>
+          <div class="updated-label">Scraped: ${d.scraped_at ? d.scraped_at.slice(0,16) : "—"}</div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+async function renderHourChart() {
+  const data = await fetchJSON("/api/chart/by_hour");
+  const keys = Object.keys(data);
+  const canvas = document.getElementById("hourChart");
+  const noData = document.getElementById("hourChartNoData");
+
+  if (!keys.length) {
+    canvas.classList.add("d-none");
+    noData.classList.remove("d-none");
+    return;
+  }
+  canvas.classList.remove("d-none");
+  noData.classList.add("d-none");
+
+  const datasets = keys.map((k, i) => ({
+    label: k,
+    data: data[k],
+    borderColor: PALETTE[i % PALETTE.length],
+    backgroundColor: "transparent",
+    tension: 0.3,
+    spanGaps: true,
+    pointRadius: 3,
+  }));
+
+  if (hourChartObj) hourChartObj.destroy();
+  hourChartObj = new Chart(canvas, {
+    type: "line",
+    data: { labels: HOURS, datasets },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: "top" },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y !== null ? ctx.parsed.y + "%" : "no data"}`
+          }
+        }
+      },
+      scales: {
+        y: {
+          min: 0,
+          max: 100,
+          title: { display: true, text: "% Full" },
+          ticks: { callback: v => v + "%" }
+        },
+        x: { title: { display: true, text: "Hour of Day" } }
+      }
+    }
+  });
+}
+
+async function renderHeatmap() {
+  const data = await fetchJSON("/api/chart/heatmap");
+  const keys = Object.keys(data);
+  const container = document.getElementById("heatmapContainer");
+  const noData = document.getElementById("heatmapNoData");
+
+  if (!keys.length) {
+    noData.classList.remove("d-none");
+    return;
+  }
+  noData.classList.add("d-none");
+
+  // Build one heatmap table per facility key
+  let html = "";
+  for (const key of keys) {
+    const matrix = data[key]; // [7][24]
+    html += `<div class="mb-3"><strong>${key}</strong></div>`;
+    html += `<div style="overflow-x:auto"><table class="heatmap-table mb-3"><thead><tr>
+      <th>Day</th>${HOURS.map(h => `<th>${h}</th>`).join("")}
+    </tr></thead><tbody>`;
+    for (let d = 0; d < 7; d++) {
+      html += `<tr><th>${DAY_NAMES[d]}</th>`;
+      for (let h = 0; h < 24; h++) {
+        const v = matrix[d][h];
+        const bg = pctColor(v);
+        const label = v !== null ? v + "%" : "";
+        html += `<td style="background:${bg}" title="${DAY_NAMES[d]} ${HOURS[h]}: ${label || 'no data'}">${label}</td>`;
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table></div>";
+  }
+  container.innerHTML = html;
+}
+
+async function renderStatus() {
+  const s = await fetchJSON("/api/status");
+  const el = document.getElementById("statusText");
+  const parts = [];
+  if (s.last_scrape) parts.push(`Last scraped: ${s.last_scrape.slice(11,16)}`);
+  if (s.next_scrape) parts.push(`Next: ${s.next_scrape.slice(11,16)}`);
+  if (s.reading_count) parts.push(`${s.reading_count} readings`);
+  el.textContent = parts.join("  ·  ") || "Scraping…";
+}
+
+async function refreshAll() {
+  await Promise.all([renderCards(), renderHourChart(), renderHeatmap(), renderStatus()]);
+}
+
+// Initial load + auto-refresh every 5 minutes
+refreshAll();
+setInterval(refreshAll, 5 * 60 * 1000);
+</script>
+</body>
+</html>
