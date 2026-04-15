@@ -92,12 +92,29 @@ function heatColor(v){
   return `rgba(220,53,69,${.2+v/100*.55})`;
 }
 
+// ── Eastern time helpers ──────────────────────────────────────────────────────
+const ET_LOCALE = {timeZone: "America/New_York"};
+
+function etHour(dt){
+  return +dt.toLocaleString("en-US", {...ET_LOCALE, hour:"numeric", hour12:false}) % 24;
+}
+function etDow(dt){
+  // returns 0=Mon … 6=Sun
+  const name = dt.toLocaleString("en-US", {...ET_LOCALE, weekday:"long"});
+  return ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].indexOf(name);
+}
+function etString(dt){
+  return dt.toLocaleString("en-US", {...ET_LOCALE, month:"short", day:"numeric",
+    hour:"numeric", minute:"2-digit", hour12:true}) + " ET";
+}
+
 // ── Parse CSV → array of objects ─────────────────────────────────────────────
 function parseCSV(raw){
   const {data} = Papa.parse(raw.trim(), {header:true, dynamicTyping:true, skipEmptyLines:true});
   return data.map(r => ({
     ...r,
-    scraped_dt: new Date(r.scraped_at + "Z"),   // treat as UTC
+    // scraped_at is ISO with ET offset, e.g. "2026-04-14T12:46:40-04:00"
+    scraped_dt: new Date(r.scraped_at),
   }));
 }
 
@@ -105,22 +122,19 @@ function parseCSV(raw){
 function groupBy(arr, key){ return arr.reduce((m,r)=>{ (m[r[key]]??=[]).push(r); return m; }, {}); }
 
 function avgByHour(rows){
-  // returns array[24] of avg pct or null
   const buckets = Array.from({length:24}, ()=>[]);
   for(const r of rows){
     if(!r.capacity) continue;
-    buckets[r.scraped_dt.getUTCHours()].push(r.count/r.capacity*100);
+    buckets[etHour(r.scraped_dt)].push(r.count/r.capacity*100);
   }
   return buckets.map(b => b.length ? +(b.reduce((s,v)=>s+v,0)/b.length).toFixed(1) : null);
 }
 
 function avgHeatmap(rows){
-  // returns [7][24] matrix (0=Mon)
   const buckets = Array.from({length:7}, ()=>Array.from({length:24},()=>[]));
   for(const r of rows){
     if(!r.capacity) continue;
-    const dow = (r.scraped_dt.getUTCDay()+6)%7; // JS Sunday=0 → Mon=0
-    buckets[dow][r.scraped_dt.getUTCHours()].push(r.count/r.capacity*100);
+    buckets[etDow(r.scraped_dt)][etHour(r.scraped_dt)].push(r.count/r.capacity*100);
   }
   return buckets.map(day =>
     day.map(cell => cell.length ? +(cell.reduce((s,v)=>s+v,0)/cell.length).toFixed(1) : null)
@@ -205,7 +219,7 @@ function renderHourChart(byFacility){
       },
       scales: {
         y: { min:0, max:100, title:{display:true,text:"% Full"}, ticks:{callback:v=>v+"%"} },
-        x: { title:{display:true,text:"Hour (UTC)"} }
+        x: { title:{display:true,text:"Hour (Eastern Time)"} }
       }
     }
   });
@@ -238,7 +252,7 @@ function renderHeatmap(byFacility){
 
   if(html){
     noData.classList.add("d-none");
-    wrap.innerHTML = html + `<p class="text-muted small">Times shown in UTC (subtract 4–5 h for Columbus local time).</p>`;
+    wrap.innerHTML = html + `<p class="text-muted small">Times shown in Eastern Time (ET).</p>`;
   }
 }
 
@@ -271,7 +285,7 @@ async function loadAll(){
 
     const newest = new Date(Math.max(...rows.map(r=>r.scraped_dt)));
     document.getElementById("lastFetch").textContent =
-      `${rows.length} readings · last scraped ${newest.toUTCString()}`;
+      `${rows.length} readings · last scraped ${etString(newest)}`;
 
   } catch(e){
     document.getElementById("lastFetch").textContent = "Error loading data: " + e.message;

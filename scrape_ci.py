@@ -6,9 +6,12 @@ Does not require Flask, SQLite, or a display.
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+
+ET = ZoneInfo("America/New_York")
 
 sys.path.insert(0, os.path.dirname(__file__))
 import scraper
@@ -20,7 +23,7 @@ COLS = ["facility", "area", "count", "capacity", "updated_at", "scraped_at"]
 def append_to_csv(records: list[dict]) -> int:
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(ET).isoformat(timespec="seconds")
     rows = [
         {
             "facility": r["facility"],
@@ -52,7 +55,7 @@ def append_to_csv(records: list[dict]) -> int:
 
 
 if __name__ == "__main__":
-    print(f"Scraping at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} …")
+    print(f"Scraping at {datetime.now(ET).strftime('%Y-%m-%d %H:%M ET')} …")
     results = asyncio.run(scraper.scrape_all())
     saved = append_to_csv(results)
     print(f"Done. {saved} record(s) written to {CSV_PATH}")
