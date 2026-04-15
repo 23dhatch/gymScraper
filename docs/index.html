@@ -113,8 +113,8 @@ function parseCSV(raw){
   const {data} = Papa.parse(raw.trim(), {header:true, dynamicTyping:true, skipEmptyLines:true});
   return data.map(r => ({
     ...r,
-    // scraped_at is ISO with ET offset, e.g. "2026-04-14T12:46:40-04:00"
-    scraped_dt: new Date(r.scraped_at),
+    // scraped_at is ISO with offset, e.g. "2026-04-14T12:46:40-04:00" (ET) or "...Z" (UTC legacy)
+    scraped_dt: new Date(r.scraped_at.replace(' ', 'T')),
   }));
 }
 
