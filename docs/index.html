@@ -110,11 +110,14 @@ function etString(dt){
 
 // ── Parse CSV → array of objects ─────────────────────────────────────────────
 function parseCSV(raw){
-  const {data} = Papa.parse(raw.trim(), {header:true, dynamicTyping:true, skipEmptyLines:true});
+  // dynamicTyping off — keep all values as strings so date fields stay parseable
+  const {data} = Papa.parse(raw.trim(), {header:true, skipEmptyLines:true});
   return data.map(r => ({
     ...r,
+    count:    +r.count,
+    capacity: +r.capacity,
     // scraped_at is ISO with offset, e.g. "2026-04-14T12:46:40-04:00" (ET) or "...Z" (UTC legacy)
-    scraped_dt: new Date(r.scraped_at.replace(' ', 'T')),
+    scraped_dt: new Date((r.scraped_at || '').replace(' ', 'T')),
   }));
 }
 
