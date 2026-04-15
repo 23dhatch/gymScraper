@@ -41,7 +41,21 @@
     <div class="col-12 text-muted small">Fetching latest readings…</div>
   </div>
 
-  <!-- Charts -->
+  <!-- Recent readings time-series chart -->
+  <div class="row g-3 mb-4">
+    <div class="col-12">
+      <div class="card p-3">
+        <h6 class="mb-3">Recent Readings — Last 14 Days</h6>
+        <canvas id="timeChart"></canvas>
+        <p class="text-muted text-center small mt-2 d-none" id="timeNoData">
+          Not enough data yet — check back after a few scrapes.
+        </p>
+        <p class="text-muted small mt-1 mb-0">Times on axis are in your browser's local timezone; tooltips show Eastern Time.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hour average + heatmap charts -->
   <div class="row g-3 mb-4">
     <div class="col-lg-6">
       <div class="card p-3">
@@ -68,6 +82,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 // ── Config ────────────────────────────────────────────────────────────────────
 const REPO    = "23dhatch/gymScraper";
@@ -81,6 +96,7 @@ const HOURS     = Array.from({length:24}, (_,i) => {
 });
 
 let hourChartObj = null;
+let timeSeriesChartObj = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function pctClass(p){ return p<40?"low":p<70?"medium":"high"; }
@@ -179,6 +195,66 @@ function renderCards(rows){
         </div>
       </div>`;
   }).join("");
+}
+
+// ── Render time-series chart (last 14 days) ───────────────────────────────────
+function renderTimeSeriesChart(byKey){
+  const canvas = document.getElementById("timeChart");
+  const noData = document.getElementById("timeNoData");
+  const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+  const datasets = [];
+
+  Object.entries(byKey).forEach(([key, rows], i) => {
+    const pts = rows
+      .filter(r => r.scraped_dt > cutoff && r.capacity)
+      .sort((a,b) => a.scraped_dt - b.scraped_dt)
+      .map(r => ({ x: r.scraped_dt.getTime(), y: +(r.count/r.capacity*100).toFixed(1) }));
+    if(pts.length){
+      datasets.push({
+        label: key,
+        data: pts,
+        borderColor: PALETTE[i%PALETTE.length],
+        backgroundColor: "transparent",
+        tension: .2,
+        pointRadius: 4,
+        pointHoverRadius: 6,
+      });
+    }
+  });
+
+  if(!datasets.length){
+    canvas.classList.add("d-none");
+    noData.classList.remove("d-none");
+    return;
+  }
+  canvas.classList.remove("d-none");
+  noData.classList.add("d-none");
+
+  if(timeSeriesChartObj) timeSeriesChartObj.destroy();
+  timeSeriesChartObj = new Chart(canvas, {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position:"top" },
+        tooltip: {
+          callbacks: {
+            title: items => etString(new Date(items[0].parsed.x)),
+            label: c => `${c.dataset.label}: ${c.parsed.y}%`
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: "time",
+          time: { unit:"day", displayFormats:{ day:"MMM d", hour:"MMM d ha" } },
+          title: { display:true, text:"Date" }
+        },
+        y: { min:0, max:100, title:{display:true,text:"% Full"}, ticks:{callback:v=>v+"%"} }
+      }
+    }
+  });
 }
 
 // ── Render hour chart ─────────────────────────────────────────────────────────
@@ -283,6 +359,7 @@ async function loadAll(){
     }
 
     renderCards(rows);
+    renderTimeSeriesChart(byKey);
     renderHourChart(byKey);
     renderHeatmap(byKey);
 

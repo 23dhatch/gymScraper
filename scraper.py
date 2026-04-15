@@ -16,8 +16,11 @@ import json
 import os
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from playwright.async_api import async_playwright, Page, Response
+
+ET = ZoneInfo("America/New_York")
 
 FACILITIES = [
     ("rpac", "RPAC"),
@@ -39,7 +42,7 @@ def _parse_time_str(raw: str) -> str:
     raw = raw.strip()
     # Try to enrich with today's date if it looks like a bare time ("4:14 PM")
     if re.match(r"^\d{1,2}:\d{2}\s*(AM|PM)$", raw, re.IGNORECASE):
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(ET).strftime("%Y-%m-%d")
         try:
             dt = datetime.strptime(f"{today} {raw}", "%Y-%m-%d %I:%M %p")
             return dt.strftime("%Y-%m-%d %H:%M")
