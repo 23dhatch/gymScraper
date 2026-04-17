@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from playwright.async_api import async_playwright, Page, Response
@@ -42,9 +42,14 @@ def _parse_time_str(raw: str) -> str:
     raw = raw.strip()
     # Try to enrich with today's date if it looks like a bare time ("4:14 PM")
     if re.match(r"^\d{1,2}:\d{2}\s*(AM|PM)$", raw, re.IGNORECASE):
-        today = datetime.now(ET).strftime("%Y-%m-%d")
+        now_et = datetime.now(ET)
+        today = now_et.strftime("%Y-%m-%d")
         try:
             dt = datetime.strptime(f"{today} {raw}", "%Y-%m-%d %I:%M %p")
+            # If the gym is showing yesterday's last-updated time (e.g. at 2am
+            # it still shows "4:02 PM" from the previous day), roll back one day.
+            if dt > now_et.replace(tzinfo=None):
+                dt -= timedelta(days=1)
             return dt.strftime("%Y-%m-%d %H:%M")
         except ValueError:
             pass
