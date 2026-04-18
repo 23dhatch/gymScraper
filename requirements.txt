@@ -1,6 +1,2 @@
-flask>=3.0
 playwright>=1.40
-schedule>=1.2
 pandas>=2.0
-pystray>=0.19
-Pillow>=10.0
